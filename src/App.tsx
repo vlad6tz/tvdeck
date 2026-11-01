@@ -1,9 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ScanSearch, Tv, X } from "lucide-react";
-import type { ConnectResult, DeviceInfo, ScanEntry } from "./types";
+import type { ConnectResult, DeviceInfo, Preset, PresetResult, ScanEntry } from "./types";
 
-type Busy = null | { kind: "scan" } | { kind: "connect"; ip: string };
+type Busy = null | { kind: "scan" } | { kind: "connect"; ip: string } | { kind: "preset"; id: string };
 
 export default function App() {
   const [devices, setDevices] = useState<ScanEntry[]>([]);
@@ -12,6 +12,27 @@ export default function App() {
   const [status, setStatus] = useState("Idle. Scan the LAN.");
   const [busy, setBusy] = useState<Busy>(null);
   const [manualIp, setManualIp] = useState("");
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [results, setResults] = useState<PresetResult[]>([]);
+  void results; // consumed by the activity log in a later pass
+
+  useEffect(() => {
+    invoke<Preset[]>("get_presets").then(setPresets).catch(() => setPresets([]));
+  }, []);
+
+  const applyPreset = useCallback(async (id: string) => {
+    setBusy({ kind: "preset", id });
+    try {
+      const res = await invoke<PresetResult>("apply_preset", { presetId: id });
+      setResults((prev) => [...prev.filter((r) => r.preset_id !== id), res]);
+      setStatus(res.error ? `Preset failed: ${res.error}` : "Preset applied.");
+    } catch (e) {
+      setStatus(`Preset failed: ${String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
 
   const scan = useCallback(async () => {
     setBusy({ kind: "scan" });
@@ -140,6 +161,20 @@ export default function App() {
           )}
           <span className="ml-auto text-xs text-slate-500">{status}</span>
         </header>
+
+        <h2 className="mb-3 mt-8 text-[11px] font-medium uppercase tracking-widest text-slate-500">
+          Optimization presets
+        </h2>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+          {presets.map((p) => (
+            <PresetCard
+              key={p.id}
+              preset={p}
+              busy={busy?.kind === "preset" && busy !== null && "id" in busy && busy.id === p.id}
+              onApply={() => void applyPreset(p.id)}
+            />
+          ))}
+        </div>
       </main>
     </div>
   );
@@ -176,6 +211,34 @@ function DeviceRow({
           {busyHere ? "..." : "Connect"}
         </button>
       )}
+    </div>
+  );
+}
+
+
+function PresetCard({
+  preset,
+  busy,
+  onApply,
+}: {
+  preset: Preset;
+  busy: boolean;
+  onApply: () => void;
+}) {
+  return (
+    <div className="flex flex-col rounded-deck-card border border-deck-line bg-deck-panel p-4 hover:border-slate-700">
+      <p className="font-medium text-slate-100">{preset.label}</p>
+      <p className="mt-1 flex-1 text-xs leading-5 text-slate-400">{preset.description}</p>
+      <p className="mt-2 text-[11px] text-slate-500">
+        {preset.commands.map((c) => c.cmd).join("  |  ")}
+      </p>
+      <button
+        className="mt-3 rounded-deck bg-cyan-500 px-3 py-2 text-[13px] font-medium text-slate-950 hover:bg-cyan-400 disabled:opacity-40"
+        disabled={busy}
+        onClick={onApply}
+      >
+        {busy ? "Working..." : "Apply"}
+      </button>
     </div>
   );
 }
