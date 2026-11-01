@@ -1,6 +1,6 @@
 //! TVDeck backend binary + Tauri IPC surface.
 //!
-//! Command: `connect_device`.
+//! Commands: `connect_device`, `scan_lan`.
 //!
 //! ADB / discovery / preset logic lives in the sibling modules so Tauri
 //! stays a thin transport shell here.
@@ -29,6 +29,14 @@ pub struct AppState {
 }
 
 #[derive(Debug, serde::Serialize)]
+pub struct ScanEntry {
+    ip: String,
+    name: Option<String>,
+    /// "mdns" or "tcp" (subnet port-5555 sweep).
+    source: String,
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct ConnectResult {
     ok: bool,
     info: Option<DeviceInfo>,
@@ -42,6 +50,19 @@ pub struct PresetResult {
     preset_id: String,
     steps: Vec<String>,
     error: Option<String>,
+}
+
+#[tauri::command]
+async fn scan_lan() -> Result<Vec<ScanEntry>, String> {
+    let found = discovery::discover().await.map_err(|e| e.to_string())?;
+    Ok(found
+        .into_iter()
+        .map(|d| ScanEntry {
+            ip: d.ip,
+            name: d.name,
+            source: d.source,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -137,6 +158,7 @@ pub fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
+            scan_lan,
             connect_device
         ])
         .run(tauri::generate_context!())
