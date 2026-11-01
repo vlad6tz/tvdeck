@@ -38,7 +38,7 @@ The ADB client is implemented natively in Rust. TVDeck speaks the protocol direc
 
 ## Installation & Downloads
 
-Pre-built binaries are published on the [Releases](https://github.com/your-org/tvdeck/releases) page. Download the package for your platform and install it as usual.
+Pre-built binaries are published on the [Releases](https://github.com/vlad6tz/tvdeck/releases) page. Download the package for your platform and install it as usual.
 
 On Arch Linux and derivatives (including Omarchy), install from the AUR:
 
@@ -82,7 +82,7 @@ sudo pacman -S webkit2gtk-4.1 base-devel
 Clone, install dependencies, and run in development mode:
 
 ```bash
-git clone https://github.com/your-org/tvdeck.git
+git clone https://github.com/vlad6tz/tvdeck.git
 cd tvdeck
 bun install
 bunx tauri dev
