@@ -1,7 +1,7 @@
 //! TVDeck backend binary + Tauri IPC surface.
 //!
-//! Commands: `connect_device`, `scan_lan`, `apply_preset`, `grant_launcher`
-//! (+ small helper: `get_presets`).
+//! Commands: `connect_device`, `scan_lan`, `apply_preset`, `install_apk`
+//! (+ small helpers: `run_shell`, `get_presets`, `disconnect`).
 //!
 //! ADB / discovery / preset logic lives in the sibling modules so Tauri
 //! stays a thin transport shell here.
@@ -192,8 +192,54 @@ async fn run_preset(device: &mut AdbDevice, preset: presets::Preset) -> Result<P
 }
 
 #[tauri::command]
+async fn install_apk(state: State<'_, AppState>, apk_path: String) -> Result<PresetResult, String> {
+    let path = PathBuf::from(apk_path.trim_matches('"'));
+    if !path.is_file() {
+        return Err(format!("not a readable file: {}", path.display()));
+    }
+    if path.extension().and_then(|e| e.to_str()) != Some("apk") {
+        return Err("Please choose a valid Android TV .apk file.".into());
+    }
+
+    let mut slot = state.device.lock().await;
+    let device = slot
+        .as_mut()
+        .ok_or_else(|| "No TV connected. Connect to a TV first.".to_string())?;
+
+    let out = device.install_apk(&path).await.map_err(|e| e.to_string())?;
+    Ok(PresetResult {
+        preset_id: "install-apk".into(),
+        steps: out
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.to_string())
+            .collect(),
+        error: None,
+    })
+}
+
+#[tauri::command]
+async fn run_shell(state: State<'_, AppState>, cmd: String) -> Result<String, String> {
+    let cmd = cmd.trim().to_string();
+    if cmd.is_empty() || cmd.contains(';') || cmd.contains("&&") || cmd.contains('|') {
+        return Err("compound shell input ( ; && | ) is not allowed from the console".into());
+    }
+    let mut slot = state.device.lock().await;
+    let device = slot
+        .as_mut()
+        .ok_or_else(|| "No TV connected. Connect to a TV first.".to_string())?;
+    device.shell(&cmd).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_presets() -> Result<Vec<presets::Preset>, String> {
     Ok(presets::catalog())
+}
+
+#[tauri::command]
+async fn disconnect(state: State<'_, AppState>) -> Result<bool, String> {
+    *state.device.lock().await = None;
+    Ok(true)
 }
 
 async fn host_key(state: &State<'_, AppState>) -> Result<Arc<adb::auth::HostKey>, String> {
@@ -224,8 +270,11 @@ pub fn main() {
             scan_lan,
             connect_device,
             apply_preset,
+            install_apk,
+            run_shell,
             get_presets,
-            grant_launcher
+            grant_launcher,
+            disconnect
         ])
         .run(tauri::generate_context!())
         .expect("TVDeck failed to start");
