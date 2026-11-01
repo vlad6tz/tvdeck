@@ -3,13 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  Check, ChevronDown, LoaderCircle, MonitorSmartphone,
-  ScanSearch, ShieldCheck, Tv, UploadCloud, X,
+  AlertCircle, Check, ChevronDown, LoaderCircle,
+  RefreshCw, ShieldCheck, Upload,
 } from "lucide-react";
 import type { ConnectResult, DeviceInfo, Preset, PresetResult, ScanEntry } from "./types";
 
 /* ------------------------------------------------------------------ */
-/* TVDeck: a small dashboard for Android TVs on the local network.    */
+/* TVDeck: flat two-pane desktop layout in the Baobab/GTK tradition. */
 /* ------------------------------------------------------------------ */
 
 type Busy =
@@ -19,11 +19,8 @@ type Busy =
   | { kind: "preset"; id: string }
   | { kind: "apk" };
 
-type ToastKind = "info" | "success" | "error";
+type NoticeKind = "info" | "success" | "error";
 
-/* Human-facing fallback for backend errors. The backend already sends
-   plain sentences for its own failures; these catch anything raw that
-   slips through (socket-level text, OS error codes). */
 function humanizeError(raw: string): { title: string; body: string } {
   const r = raw.toLowerCase();
   if (r.includes("allow usb debugging") || r.includes("accept the dialog") || r.includes("authorization")) {
@@ -47,7 +44,7 @@ function humanizeError(raw: string): { title: string; body: string } {
   if (r.includes("no tv connected")) {
     return {
       title: "No TV Connected",
-      body: "Pick a TV on the left or enter its address, then try again.",
+      body: "Pick a TV on the left or enter its address above, then try again.",
     };
   }
   return { title: "Something went wrong", body: raw };
@@ -58,7 +55,7 @@ export default function App() {
   const [connected, setConnected] = useState<DeviceInfo | null>(null);
   const [connectedIp, setConnectedIp] = useState<string | null>(null);
   const [manualIp, setManualIp] = useState("");
-  const [status, setStatus] = useState("Pick a TV or enter its address.");
+  const [status, setStatus] = useState("Pick a TV or enter its address above.");
   const [busy, setBusy] = useState<Busy>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [launcherPkg, setLauncherPkg] = useState("com.spocky.projtv");
@@ -67,30 +64,29 @@ export default function App() {
   const [dropping, setDropping] = useState(false);
   const [devOpen, setDevOpen] = useState<Record<string, boolean>>({});
   const [apkState, setApkState] = useState<"idle" | "installing" | "done">("idle");
-  const toasts = useRef<{ id: number; kind: ToastKind; body: string }[]>([]);
-  const [, forceToastRerender] = useState(0);
 
-  /* Toast registry: newest first, auto-expiring. No alert() anywhere. */
-  const pushToast = useCallback((kind: ToastKind, body: string) => {
+  /* InfoBar registry: single top banner shows the newest notice, which
+     auto-expires. This replaces floating toasts. */
+  const notices = useRef<{ id: number; kind: NoticeKind; body: string }[]>([]);
+  const [noticeTick, setNoticeTick] = useState(0);
+  const pushNotice = useCallback((kind: NoticeKind, body: string) => {
     const id = Date.now() + Math.random();
-    toasts.current = [{ id, kind, body }, ...toasts.current].slice(0, 3);
-    forceToastRerender((n) => n + 1);
+    notices.current = [{ id, kind, body }, ...notices.current].slice(0, 3);
+    setNoticeTick((n) => n + 1);
     window.setTimeout(() => {
-      toasts.current = toasts.current.filter((t) => t.id !== id);
-      forceToastRerender((n) => n + 1);
-    }, 4200);
+      notices.current = notices.current.filter((t) => t.id !== id);
+      setNoticeTick((n) => n + 1);
+    }, 5000);
   }, []);
-
-  const dropToast = useCallback((id: number) => {
-    toasts.current = toasts.current.filter((t) => t.id !== id);
-    forceToastRerender((n) => n + 1);
+  const dismissNotice = useCallback(() => {
+    notices.current = notices.current.slice(1);
+    setNoticeTick((n) => n + 1);
   }, []);
 
   useEffect(() => {
     invoke<Preset[]>("get_presets").then(setPresets).catch(() => setPresets([]));
   }, []);
 
-  /* Keep the two-second "Applied" chip honest: revert after 2s. */
   const flashApplied = useCallback((id: string) => {
     setApplied((prev) => ({ ...prev, [id]: true }));
     window.setTimeout(() => {
@@ -107,42 +103,42 @@ export default function App() {
       setStatus(
         found.length > 0
           ? `Found ${found.length} TV${found.length > 1 ? "s" : ""}.`
-          : "No TVs found. Check the TV is on and connected to the same network, or add it by address below.",
+          : "No TVs found. Check the TV is on and on the same network, or add it by address above.",
       );
     } catch (e) {
-      const { title, body } = humanizeError(String(e));
-      pushToast("error", `${title}. ${body}`);
+      const { body } = humanizeError(String(e));
+      pushNotice("error", body);
     } finally {
       setBusy(null);
     }
-  }, [pushToast]);
+  }, [pushNotice]);
 
   const connect = useCallback(async (ip: string, friendlyName?: string) => {
     setBusy({ kind: "connect", ip });
-    setStatus("Connecting…");
+    setStatus(`Connecting to ${ip}…`);
     try {
       const res = await invoke<ConnectResult>("connect_device", { ip });
       if (res.ok && res.info) {
         setConnected(res.info);
         setConnectedIp(ip);
-        setStatus(`Connected to ${res.info.model}.`);
-        pushToast("success", `Connected to ${res.info.model}.`);
+        setStatus("Connected.");
+        pushNotice("success", `Connected to ${res.info.model}.`);
       } else {
         setConnected(null);
         setConnectedIp(null);
         setStatus("Connection failed.");
-        const { title, body } = humanizeError(res.error ?? "Connection failed");
-        pushToast("error", `${title}. ${body}`);
+        const { body } = humanizeError(res.error ?? "Connection failed");
+        pushNotice("error", body);
         void friendlyName;
       }
     } catch (e) {
       setStatus("Connection failed.");
-      const { title, body } = humanizeError(String(e));
-      pushToast("error", `${title}. ${body}`);
+      const { body } = humanizeError(String(e));
+      pushNotice("error", body);
     } finally {
       setBusy(null);
     }
-  }, [pushToast]);
+  }, [pushNotice]);
 
   const disconnect = useCallback(async () => {
     await invoke("disconnect").catch(() => undefined);
@@ -153,55 +149,51 @@ export default function App() {
 
   const applyPreset = useCallback(async (id: string) => {
     if (!connected) {
-      const { title, body } = humanizeError("no tv connected");
-      pushToast("error", `${title}. ${body}`);
+      pushNotice("error", humanizeError("no tv connected").body);
       return;
     }
     setBusy({ kind: "preset", id });
     try {
       const res = await invoke<PresetResult>("apply_preset", { presetId: id });
       if (res.error) {
-        pushToast("error", humanizeError(res.error).body);
+        pushNotice("error", humanizeError(res.error).body);
       } else {
         flashApplied(id);
-        pushToast("success", "Applied on the TV.");
         setResults((prev) => [...prev.filter((r) => r.preset_id !== id), res]);
       }
     } catch (e) {
-      const { title, body } = humanizeError(String(e));
-      pushToast("error", `${title}. ${body}`);
+      const { body } = humanizeError(String(e));
+      pushNotice("error", body);
     } finally {
       setBusy(null);
     }
-  }, [connected, pushToast, flashApplied]);
+  }, [connected, pushNotice, flashApplied]);
 
   const applyLauncher = useCallback(async () => {
     if (!connected) {
-      const { title, body } = humanizeError("no tv connected");
-      pushToast("error", `${title}. ${body}`);
+      pushNotice("error", humanizeError("no tv connected").body);
       return;
     }
     setBusy({ kind: "preset", id: "grant" });
     try {
       const res = await invoke<PresetResult>("grant_launcher", { package: launcherPkg });
       if (res.error) {
-        pushToast("error", humanizeError(res.error).body);
+        pushNotice("error", humanizeError(res.error).body);
       } else {
         flashApplied("grant");
-        pushToast("success", "The launcher is ready to use.");
+        pushNotice("success", "The launcher is ready to use.");
       }
     } catch (e) {
-      const { title, body } = humanizeError(String(e));
-      pushToast("error", `${title}. ${body}`);
+      const { body } = humanizeError(String(e));
+      pushNotice("error", body);
     } finally {
       setBusy(null);
     }
-  }, [connected, launcherPkg, pushToast, flashApplied]);
+  }, [connected, launcherPkg, pushNotice, flashApplied]);
 
   const installApk = useCallback(async (apkPath: string) => {
     if (!connected) {
-      const { title, body } = humanizeError("no tv connected");
-      pushToast("error", `${title}. ${body}`);
+      pushNotice("error", humanizeError("no tv connected").body);
       setApkState("idle");
       return;
     }
@@ -210,23 +202,21 @@ export default function App() {
     try {
       const res = await invoke<PresetResult>("install_apk", { apkPath });
       if (res.error) {
-        pushToast("error", humanizeError(res.error).body);
+        pushNotice("error", humanizeError(res.error).body);
         setApkState("idle");
       } else {
         setApkState("done");
-        pushToast("success", "App installed on the TV.");
         window.setTimeout(() => setApkState("idle"), 2000);
       }
     } catch (e) {
-      const { title, body } = humanizeError(String(e));
-      pushToast("error", `${title}. ${body}`);
+      const { body } = humanizeError(String(e));
+      pushNotice("error", body);
       setApkState("idle");
     } finally {
       setBusy(null);
     }
-  }, [connected, pushToast]);
+  }, [connected, pushNotice]);
 
-  /* Tauri v2 drag & drop: watch for .apk drops anywhere on the window. */
   useEffect(() => {
     const unlisten = getCurrentWebview().onDragDropEvent((ev) => {
       if (ev.payload.type === "over") {
@@ -235,174 +225,207 @@ export default function App() {
         setDropping(false);
         const apk = ev.payload.paths.find((p) => p.toLowerCase().endsWith(".apk"));
         if (apk) void installApk(apk);
-        else pushToast("error", "Please drop an .apk file.");
+        else pushNotice("error", "Please drop an .apk file.");
       } else {
         setDropping(false);
       }
     });
     return () => void unlisten.then((fn) => fn());
-  }, [installApk, pushToast]);
+  }, [installApk, pushNotice]);
+
+  void noticeTick;
+  const notice = notices.current[0];
 
   return (
-    <div className="flex h-full font-sans text-sm">
-      <aside className="flex w-72 shrink-0 flex-col border-r border-deck-line bg-deck-panel">
-        <div className="flex items-center gap-2 border-b border-deck-line px-4 py-3">
-          <Tv className="h-5 w-5 text-deck-accent" />
-          <span className="text-base font-semibold tracking-wide">TVDeck</span>
-        </div>
+    <div className="flex h-full flex-col font-sans text-[13px] text-neutral-200">
+      {/* HeaderBar */}
+      <header className="relative flex h-12 shrink-0 items-center gap-2 border-b border-deck-line bg-deck-panel px-3">
+        <button
+          className="flex h-8 items-center gap-1.5 rounded-deck border border-deck-line px-2.5 text-neutral-300 transition-colors hover:bg-deck-raised disabled:opacity-40"
+          onClick={() => void scan()}
+          disabled={busy !== null}
+        >
+          {busy?.kind === "scan" ? (
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+          ) : (
+            <RefreshCw className="h-4 w-4" />
+          )}
+          Scan Network
+        </button>
 
-        {connected && (
-          <div className="mx-3 mt-3 rounded-deck-card border border-deck-line bg-deck-bg/60 px-3 py-2.5">
-            <div className="flex items-center gap-2">
-              <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
-              <p className="truncate text-slate-100">{connected.model}</p>
-              <button
-                className="ml-auto text-[13px] text-slate-500 hover:text-slate-300"
-                onClick={() => void disconnect()}
-                title="Disconnect"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-            <p className="truncate pl-4 text-[11px] text-slate-500">
-              Connected • {connectedIp}
-            </p>
-          </div>
-        )}
+        <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 font-semibold text-neutral-100">
+          TVDeck
+        </span>
 
-        <div className="flex items-center justify-between px-4 pb-2 pt-4">
-          <span className="text-[11px] font-medium uppercase tracking-widest text-slate-500">
-            TVs on this network
-          </span>
+        <div className="ml-auto flex items-center gap-2">
+          <input
+            className="h-8 w-40 rounded-deck border border-deck-line bg-deck-bg px-2.5 font-mono text-xs text-neutral-200 placeholder:text-neutral-500 focus:border-deck-accent focus:outline-none"
+            placeholder="192.168.1.x"
+            value={manualIp}
+            onChange={(e) => setManualIp(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && manualIp.trim() && void connect(manualIp.trim())}
+          />
           <button
-            className="rounded-deck p-1 text-slate-500 transition-colors hover:bg-slate-800 hover:text-cyan-300 disabled:opacity-40"
-            title="Scan the local network"
-            onClick={() => void scan()}
-            disabled={busy !== null}
+            className="h-8 rounded-deck bg-deck-accent px-3 font-medium text-white transition-colors hover:bg-deck-accent-hover disabled:opacity-40"
+            disabled={busy !== null || !manualIp.trim()}
+            onClick={() => void connect(manualIp.trim())}
           >
-            {busy?.kind === "scan" ? (
-              <LoaderCircle className="h-4 w-4 animate-spin" />
-            ) : (
-              <ScanSearch className="h-4 w-4" />
-            )}
+            {busy?.kind === "connect" ? "Connecting…" : "Connect"}
           </button>
         </div>
+      </header>
 
-        <div className="flex-1 overflow-y-auto px-2">
-          {devices.map((d) => (
-            <DeviceRow
-              key={d.ip}
-              device={d}
-              connectedIp={connectedIp}
-              busy={busy}
-              onConnect={connect}
-              forget={() => setDevices((prev) => prev.filter((x) => x.ip !== d.ip))}
-            />
-          ))}
-          {devices.length === 0 && (
-            <p className="px-2 py-4 text-xs leading-5 text-slate-500">
-              No TVs yet. On your TV go to Settings → About, tap "Build number" 5 times, then turn on
-              network debugging in Developer options.
-            </p>
-          )}
+      {/* InfoBar */}
+      {notice && (
+        <div
+          className={`flex shrink-0 items-start gap-2 border-b px-4 py-2 ${
+            notice.kind === "error"
+              ? "border-deck-line bg-[#2b2222] text-neutral-200"
+              : notice.kind === "success"
+                ? "border-deck-line bg-deck-raised text-neutral-200"
+                : "border-deck-line bg-deck-raised text-neutral-200"
+          }`}
+        >
+          {notice.kind === "error" ? (
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-deck-err" />
+          ) : notice.kind === "success" ? (
+            <Check className="mt-0.5 h-4 w-4 shrink-0 text-deck-ok" />
+          ) : null}
+          <p className="min-w-0 flex-1 text-xs leading-5">{notice.body}</p>
+          <button
+            className="shrink-0 rounded-deck p-0.5 text-neutral-500 hover:bg-deck-line hover:text-neutral-300"
+            onClick={dismissNotice}
+            aria-label="Dismiss"
+          >
+            <span className="text-xs">✕</span>
+          </button>
         </div>
+      )}
 
-        <div className="border-t border-deck-line p-3">
-          <div className="flex gap-2">
-            <input
-              className="min-w-0 flex-1 rounded-deck border border-deck-line bg-deck-bg px-2.5 py-1.5 text-slate-200 placeholder:text-slate-600 focus:border-cyan-600 focus:outline-none"
-              placeholder="Add a TV address, e.g. 192.168.1.42"
-              value={manualIp}
-              onChange={(e) => setManualIp(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && manualIp.trim() && void connect(manualIp.trim())}
-            />
-            <button
-              className="rounded-deck bg-cyan-500 px-3 py-1.5 font-medium text-slate-950 transition-colors hover:bg-cyan-400 disabled:opacity-40"
-              disabled={busy !== null || !manualIp.trim()}
-              onClick={() => void connect(manualIp.trim())}
-            >
-              Add
-            </button>
+      {/* Two-pane body */}
+      <div className="flex min-h-0 flex-1">
+        {/* Left pane: device list */}
+        <aside className="flex w-64 shrink-0 flex-col border-r border-deck-line bg-deck-panel">
+          <p className="px-3 pb-1 pt-3 text-[11px] font-medium uppercase tracking-widest text-neutral-500">
+            Devices
+          </p>
+          <div className="flex-1 overflow-y-auto px-1.5 pb-3">
+            {devices.map((d) => (
+              <DeviceRow
+                key={d.ip}
+                device={d}
+                connectedIp={connectedIp}
+                busy={busy}
+                onConnect={connect}
+                forget={() => setDevices((prev) => prev.filter((x) => x.ip !== d.ip))}
+              />
+            ))}
+            {devices.length === 0 && (
+              <p className="px-2 py-4 text-xs leading-5 text-neutral-500">
+                No TVs found. On the TV, go to Settings, About, tap "Build number" 5 times, then turn
+                on network debugging in Developer options.
+              </p>
+            )}
           </div>
-        </div>
-      </aside>
+        </aside>
 
-      <main className="flex min-w-0 flex-1 flex-col overflow-y-auto px-8 pb-8 pt-5">
-        <header className="mb-5 flex items-center gap-3">
-          {connected ? (
+        {/* Right pane: status, presets, installer */}
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          {/* status banner */}
+          <div className="flex items-baseline gap-3 border-b border-deck-line bg-deck-bg px-5 py-2.5">
+            {connected ? (
+              <>
+                <span className="h-2 w-2 shrink-0 translate-y-[-1px] self-center rounded-full bg-deck-ok" />
+                <span className="font-medium text-neutral-100">
+                  {connected.brand} {connected.model}
+                </span>
+                <span className="font-mono text-xs text-neutral-400">{connectedIp}</span>
+                <span className="text-xs text-neutral-500">
+                  Android {connected.android_version}
+                </span>
+              </>
+            ) : (
+              <span className="text-neutral-400">No TV connected: {status}</span>
+            )}
+            {connected && (
+              <>
+                <span className="ml-auto text-xs text-neutral-500">{status}</span>
+                <button
+                  className="shrink-0 rounded-deck border border-deck-line px-2 py-0.5 text-[11px] text-neutral-400 transition-colors hover:bg-deck-raised hover:text-neutral-200"
+                  onClick={() => void disconnect()}
+                >
+                  Disconnect
+                </button>
+              </>
+            )}
+          </div>
+
+          <SectionLabel>Presets</SectionLabel>
+          <div className="mx-5 rounded-deck border border-deck-line">
+            {presets.map((p, i) => (
+              <PresetRow
+                key={p.id}
+                preset={p}
+                first={i === 0}
+                busy={busy === null ? false : busy.kind === "preset" && "id" in busy && busy.id === p.id}
+                applied={!!applied[p.id]}
+                devOpen={!!devOpen[p.id]}
+                onToggleDev={() => setDevOpen((s) => ({ ...s, [p.id]: !s[p.id] }))}
+                onApply={() => void applyPreset(p.id)}
+              />
+            ))}
+          </div>
+
+          <SectionLabel>Custom launcher</SectionLabel>
+          <LauncherRow
+            launcherPkg={launcherPkg}
+            setLauncherPkg={setLauncherPkg}
+            busy={busy === null ? false : busy.kind === "preset" && "id" in busy && busy.id === "grant"}
+            applied={!!applied["grant"]}
+            devOpen={!!devOpen["grant"]}
+            onToggleDev={() => setDevOpen((s) => ({ ...s, grant: !s["grant"] }))}
+            onApply={() => void applyLauncher()}
+            connected={!!connected}
+          />
+
+          <SectionLabel>Install an app</SectionLabel>
+          <ApkDropzone
+            dropping={dropping}
+            busy={apkState === "installing"}
+            done={apkState === "done"}
+            disabled={busy !== null}
+            onBrowse={async () => {
+              const file = await open({
+                filters: [{ name: "Android app", extensions: ["apk"] }],
+                multiple: false,
+                title: "Choose an app to install",
+              });
+              if (file) void installApk(file);
+            }}
+          />
+
+          {results.length > 0 && (
             <>
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-              <span className="text-slate-200">
-                {connected.brand} {connected.model}
-              </span>
-              <span className="text-xs text-slate-500">Android {connected.android_version}</span>
-            </>
-          ) : (
-            <>
-              <MonitorSmartphone className="h-4 w-4 text-slate-600" />
-              <span className="text-slate-400">No TV connected</span>
+              <SectionLabel>Recent activity</SectionLabel>
+              <ActivityLog results={results} />
             </>
           )}
-          <span className="ml-auto text-xs text-slate-500">{status}</span>
-        </header>
-
-        <SectionLabel title="TV care" />
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-          {presets.map((p) => (
-            <PresetCard
-              key={p.id}
-              preset={p}
-              busy={busy?.kind === "preset" && busy !== null && "id" in busy && busy.id === p.id}
-              applied={!!applied[p.id]}
-              devOpen={!!devOpen[p.id]}
-              onToggleDev={() => setDevOpen((s) => ({ ...s, [p.id]: !s[p.id] }))}
-              onApply={() => void applyPreset(p.id)}
-            />
-          ))}
-        </div>
-
-        <SectionLabel title="Launcher" />
-        <LauncherCard
-          launcherPkg={launcherPkg}
-          setLauncherPkg={setLauncherPkg}
-          busy={busy?.kind === "preset" && busy !== null && "id" in busy && busy.id === "grant"}
-          applied={!!applied["grant"]}
-          devOpen={!!devOpen["grant"]}
-          onToggleDev={() => setDevOpen((s) => ({ ...s, grant: !s["grant"] }))}
-          onApply={() => void applyLauncher()}
-          connected={!!connected}
-        />
-
-        <SectionLabel title="Install an app" />
-        <ApkDropzone
-          dropping={dropping}
-          busy={apkState === "installing"}
-          done={apkState === "done"}
-          disabled={busy !== null}
-          onBrowse={async () => {
-            const file = await open({
-              filters: [{ name: "Android app", extensions: ["apk"] }],
-              multiple: false,
-              title: "Choose an app to install",
-            });
-            if (file) void installApk(file);
-          }}
-        />
-
-        {results.length > 0 && (
-          <>
-            <SectionLabel title="Recent activity" />
-            <ActivityLog results={results} />
-          </>
-        )}
-      </main>
-
-      <ToastStack toasts={[...toasts.current]} onDismiss={dropToast} />
+          <div className="h-8" />
+        </main>
+      </div>
     </div>
   );
 }
 
 /* ------------------------------ pieces ------------------------------ */
+
+function SectionLabel({ children }: { children: string }) {
+  return (
+    <p className="mb-2 mt-6 px-5 text-[11px] font-medium uppercase tracking-widest text-neutral-500">
+      {children}
+    </p>
+  );
+}
 
 function DeviceRow({
   device,
@@ -417,51 +440,95 @@ function DeviceRow({
   onConnect: (ip: string) => Promise<void>;
   forget: () => void;
 }) {
-  const busyHere = busy?.kind === "connect" && busy !== null && "ip" in busy && busy.ip === device.ip;
+  const busyHere = busy === undefined || busy === null ? false : busy.kind === "connect" && "ip" in busy && busy.ip === device.ip;
   const isConnected = connectedIp === device.ip;
   return (
-    <div className="group flex items-center gap-2.5 rounded-deck px-2.5 py-2 transition-colors hover:bg-slate-800/50">
+    <div
+      className={`group flex items-center gap-2 rounded-deck px-3 py-2.5 transition-colors ${
+        isConnected ? "bg-deck-raised" : "hover:bg-deck-line-soft"
+      }`}
+    >
       <span
-        className={`h-2 w-2 shrink-0 rounded-full ${
-          isConnected ? "bg-emerald-400" : "bg-slate-600"
-        }`}
+        className={`h-2 w-2 shrink-0 rounded-full ${isConnected ? "bg-deck-ok" : "bg-neutral-600"}`}
       />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-slate-200">{device.ip}</p>
-        <p className="truncate text-[11px] text-slate-500">
-          {device.name ? device.name : "Responding on the network"}
+        <p className={`truncate text-xs font-medium ${isConnected ? "text-neutral-100" : "text-neutral-300"}`}>
+          {device.name ?? "Unknown TV"}
         </p>
+        <p className="truncate font-mono text-[11px] text-neutral-500">{device.ip}</p>
       </div>
       {!isConnected && (
         <button
-          className="rounded-deck border border-slate-700 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:border-cyan-700 hover:bg-cyan-950/40 hover:text-cyan-200 disabled:opacity-40"
-          disabled={busyHere || busy?.kind === "connect"}
+          className="h-6 rounded-deck border border-deck-line px-2 text-[11px] text-neutral-300 opacity-0 transition-opacity hover:bg-deck-raised group-hover:opacity-100 disabled:opacity-30"
+          disabled={busyHere || (busy !== undefined && busy !== null && busy.kind === "connect")}
           onClick={() => void onConnect(device.ip)}
         >
           {busyHere ? <LoaderCircle className="h-3 w-3 animate-spin" /> : "Connect"}
         </button>
       )}
       <button
-        className="text-slate-700 opacity-0 transition-opacity hover:text-slate-400 group-hover:opacity-100"
+        className="shrink-0 text-neutral-600 opacity-0 transition-opacity hover:text-neutral-400 group-hover:opacity-100"
         title="Hide this TV"
         onClick={forget}
       >
-        <X className="h-3.5 w-3.5" />
+        <span className="text-xs">✕</span>
       </button>
     </div>
   );
 }
 
-function SectionLabel({ title }: { title: string }) {
+function ApplyButton({
+  busy,
+  applied,
+  onClick,
+  disabled,
+}: {
+  busy: boolean;
+  applied: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   return (
-    <h2 className="mb-3 mt-8 first:mt-1 text-[11px] font-medium uppercase tracking-widest text-slate-500">
-      {title}
-    </h2>
+    <button
+      className="h-7 shrink-0 rounded-deck border border-deck-line bg-deck-raised px-3 text-xs font-medium text-neutral-100 transition-colors hover:bg-deck-line disabled:opacity-40"
+      disabled={busy || applied || disabled}
+      onClick={onClick}
+    >
+      {busy ? (
+        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+      ) : applied ? (
+        <span className="flex items-center gap-1">
+          <Check className="h-3.5 w-3.5 text-deck-ok" /> Applied
+        </span>
+      ) : (
+        "Apply"
+      )}
+    </button>
   );
 }
 
-function PresetCard({
+function AdvancedToggle({
+  open,
+  onToggle,
+}: {
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      className="flex items-center gap-1 text-[11px] text-neutral-500 transition-colors hover:text-neutral-300"
+      onClick={onToggle}
+      aria-expanded={open}
+    >
+      <ChevronDown className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`} />
+      Advanced details
+    </button>
+  );
+}
+
+function PresetRow({
   preset,
+  first,
   busy,
   applied,
   devOpen,
@@ -469,48 +536,31 @@ function PresetCard({
   onApply,
 }: {
   preset: Preset;
+  first: boolean;
   busy: boolean;
   applied: boolean;
   devOpen: boolean;
   onToggleDev: () => void;
   onApply: () => void;
 }) {
-  const cleanTitle = CLEAN_PRESET_TITLES[preset.id] ?? preset.label;
   const sub = preset.description.split(".")[0];
   return (
-    <div className="flex flex-col rounded-deck-card border border-deck-line bg-deck-panel p-4 transition-colors hover:border-slate-700">
-      <p className="font-medium text-slate-100">{cleanTitle}</p>
-      <p className="mt-1 flex-1 text-xs leading-5 text-slate-400">{sub}</p>
-      {preset.restart_required && (
-        <p className="mt-2 text-[11px] text-amber-400/70">Reboot the TV to finish.</p>
-      )}
-      <button
-        className="mt-3 flex items-center justify-center gap-1.5 rounded-deck bg-cyan-500 px-3 py-2 text-[13px] font-medium text-slate-950 transition-colors hover:bg-cyan-400 disabled:opacity-40"
-        disabled={busy || applied}
-        onClick={onApply}
-      >
-        {busy ? (
-          <LoaderCircle className="h-4 w-4 animate-spin" />
-        ) : applied ? (
-          <>
-            <Check className="h-4 w-4" /> Applied
-          </>
-        ) : (
-          "Apply"
+    <div className={`px-3.5 py-2.5 ${first ? "" : "border-t border-deck-line-soft"}`}>
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium text-neutral-100">{preset.label}</p>
+          <p className="truncate text-xs text-neutral-400">{sub}</p>
+        </div>
+        {preset.restart_required && (
+          <span className="shrink-0 text-[11px] text-deck-warn/80">Reboot to finish</span>
         )}
-      </button>
-      <button
-        className="mt-2 flex items-center gap-1 text-left text-[11px] text-slate-500 transition-colors hover:text-slate-400"
-        onClick={onToggleDev}
-        aria-expanded={devOpen}
-      >
-        <ChevronDown className={`h-3 w-3 transition-transform ${devOpen ? "rotate-180" : ""}`} />
-        View technical details
-      </button>
+        <ApplyButton busy={busy} applied={applied} onClick={onApply} />
+      </div>
+      <div className="mt-1"><AdvancedToggle open={devOpen} onToggle={onToggleDev} /></div>
       {devOpen && (
-        <div className="mt-2 rounded-deck bg-black/40 p-2.5 font-mono text-[11px] leading-5">
+        <div className="mt-1.5 rounded-deck bg-deck-bg py-1.5 font-mono text-[11px] leading-5">
           {preset.commands.map((c, i) => (
-            <p key={i} className="truncate text-slate-400" title={c.cmd}>
+            <p key={i} className="truncate px-2 text-neutral-400" title={c.cmd}>
               {c.cmd}
             </p>
           ))}
@@ -520,13 +570,7 @@ function PresetCard({
   );
 }
 
-const CLEAN_PRESET_TITLES: Record<string, string> = {
-  "background-ram-opt": "Cap Idle Background Apps",
-  "animation-speedup": "Speed Up Animations",
-  "xiaomi-debloat": "Remove Xiaomi Stock Ads",
-};
-
-function LauncherCard({
+function LauncherRow({
   launcherPkg,
   setLauncherPkg,
   busy,
@@ -551,16 +595,16 @@ function LauncherCard({
     `pm grant ${launcherPkg} android.permission.PACKAGE_USAGE_STATS`,
   ];
   return (
-    <div className="rounded-deck-card border border-deck-line bg-deck-panel p-4 transition-colors hover:border-slate-700">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center">
+    <div className="mx-5 rounded-deck border border-deck-line px-3.5 py-2.5">
+      <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
-          <p className="font-medium text-slate-100">Use a custom home screen</p>
-          <p className="mt-1 text-xs leading-5 text-slate-400">
+          <p className="truncate font-medium text-neutral-100">Use a custom home screen</p>
+          <p className="truncate text-xs text-neutral-400">
             Lets a replacement launcher, such as Projectivy, take over the home screen.
           </p>
         </div>
         <select
-          className="rounded-deck border border-deck-line bg-deck-bg px-2.5 py-2 text-slate-200 focus:border-cyan-600 focus:outline-none md:w-56"
+          className="h-7 rounded-deck border border-deck-line bg-deck-bg px-2 text-xs text-neutral-200 focus:border-deck-accent focus:outline-none"
           value={launcherPkg}
           onChange={(e) => setLauncherPkg(e.target.value)}
         >
@@ -569,35 +613,26 @@ function LauncherCard({
           <option value="com.google.android.tvlauncher">Stock Google TV launcher</option>
         </select>
         <button
-          className="flex items-center justify-center gap-1.5 rounded-deck bg-violet-500 px-3.5 py-2 text-[13px] font-medium text-slate-950 transition-colors hover:bg-violet-400 disabled:opacity-40"
+          className="h-7 shrink-0 rounded-deck border border-deck-line bg-deck-raised px-3 text-xs font-medium text-neutral-100 transition-colors hover:bg-deck-line disabled:opacity-40"
           onClick={onApply}
           disabled={busy || applied || !connected}
         >
           {busy ? (
-            <LoaderCircle className="h-4 w-4 animate-spin" />
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
           ) : applied ? (
-            <>
-              <Check className="h-4 w-4" /> Ready
-            </>
+            <span className="flex items-center gap-1">
+              <ShieldCheck className="h-3.5 w-3.5 text-deck-ok" /> Ready
+            </span>
           ) : (
-            <>
-              <ShieldCheck className="h-4 w-4" /> Set up
-            </>
+            "Set up"
           )}
         </button>
       </div>
-      <button
-        className="mt-2.5 flex items-center gap-1 text-[11px] text-slate-500 transition-colors hover:text-slate-400"
-        onClick={onToggleDev}
-        aria-expanded={devOpen}
-      >
-        <ChevronDown className={`h-3 w-3 transition-transform ${devOpen ? "rotate-180" : ""}`} />
-        View technical details
-      </button>
+      <div className="mt-1"><AdvancedToggle open={devOpen} onToggle={onToggleDev} /></div>
       {devOpen && (
-        <div className="mt-2 rounded-deck bg-black/40 p-2.5 font-mono text-[11px] leading-5">
+        <div className="mt-1.5 rounded-deck bg-deck-bg py-1.5 font-mono text-[11px] leading-5">
           {commands.map((c, i) => (
-            <p key={i} className="truncate text-slate-400" title={c}>
+            <p key={i} className="truncate px-2 text-neutral-400" title={c}>
               {c}
             </p>
           ))}
@@ -621,34 +656,33 @@ function ApkDropzone({
   onBrowse: () => void | Promise<void>;
 }) {
   return (
-    <div
-      className={`flex flex-col items-center justify-center rounded-deck-card border-2 border-dashed px-6 py-10 text-center transition-colors ${
-        dropping
-          ? "border-cyan-500/70 bg-cyan-500/5"
-          : "border-slate-800 bg-deck-panel hover:border-slate-700"
-      }`}
-    >
-      <UploadCloud className={`h-7 w-7 ${dropping ? "text-cyan-300" : "text-slate-600"}`} />
-      <p className="mt-3 text-sm text-slate-300">Drag an app file (.apk) here to install</p>
-      <p className="mt-1 text-xs text-slate-500">Large files can take a minute to copy.</p>
-      <div className="mt-4">
-        <button
-          className="rounded-deck border border-slate-700 px-3.5 py-1.5 text-[13px] text-slate-200 transition-colors hover:border-slate-500 hover:bg-slate-800 disabled:opacity-40"
-          onClick={() => void onBrowse()}
-          disabled={disabled || busy}
-        >
-          {busy ? (
-            <span className="flex items-center gap-1.5">
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> Installing…
-            </span>
-          ) : done ? (
-            <span className="flex items-center gap-1.5 text-emerald-300">
-              <Check className="h-3.5 w-3.5" /> Installed
-            </span>
-          ) : (
-            "Browse files"
-          )}
-        </button>
+    <div className="mx-5">
+      <div
+        className={`flex flex-col items-center justify-center rounded-deck border border-dashed px-6 py-8 text-center transition-colors ${
+          dropping ? "border-deck-accent/70" : "border-deck-line hover:border-neutral-500"
+        }`}
+      >
+        <Upload className={`h-5 w-5 ${dropping ? "text-neutral-200" : "text-neutral-500"}`} />
+        <p className="mt-2 text-xs text-neutral-300">Drag an app file (.apk) here to install</p>
+        <div className="mt-3">
+          <button
+            className="h-7 rounded-deck border border-deck-line bg-deck-raised px-3 text-xs font-medium text-neutral-100 transition-colors hover:bg-deck-line disabled:opacity-40"
+            onClick={() => void onBrowse()}
+            disabled={disabled || busy}
+          >
+            {busy ? (
+              <span className="flex items-center gap-1.5">
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> Installing…
+              </span>
+            ) : done ? (
+              <span className="flex items-center gap-1.5">
+                <Check className="h-3.5 w-3.5 text-deck-ok" /> Installed
+              </span>
+            ) : (
+              "Browse files"
+            )}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -656,63 +690,23 @@ function ApkDropzone({
 
 function ActivityLog({ results }: { results: PresetResult[] }) {
   return (
-    <div className="rounded-deck-card bg-black/30 px-4 py-3 font-mono text-[11px] leading-6">
+    <div className="mx-5 rounded-deck border border-deck-line bg-deck-bg px-3.5 py-2 font-mono text-[11px] leading-5">
       {results.map((r, i) => (
         <div key={`${r.preset_id}-${i}`} className="mb-1.5 last:mb-0">
           {r.steps.map((s, j) => (
             <p
               key={j}
               className={
-                s.includes("Error") || s.toLowerCase().includes("error")
-                  ? "text-red-300"
+                s.toLowerCase().includes("error")
+                  ? "text-deck-err"
                   : s.endsWith(": OK")
-                    ? "text-emerald-400/70"
-                    : "text-slate-500"
+                    ? "text-deck-ok/80"
+                    : "text-neutral-500"
               }
             >
               {s}
             </p>
           ))}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ToastStack({
-  toasts,
-  onDismiss,
-}: {
-  toasts: { id: number; kind: ToastKind; body: string }[];
-  onDismiss: (id: number) => void;
-}) {
-  return (
-    <div className="pointer-events-none fixed bottom-5 right-5 z-50 flex w-96 max-w-[calc(100vw-2.5rem)] flex-col gap-2">
-      {toasts.map((t) => (
-        <div
-          key={t.id}
-          role="status"
-          className={`pointer-events-auto flex items-start gap-2.5 rounded-deck-card border px-4 py-3 text-xs leading-5 shadow-lg shadow-black/40 backdrop-blur ${
-            t.kind === "error"
-              ? "border-red-900/70 bg-red-950/70 text-red-100"
-              : t.kind === "success"
-                ? "border-emerald-900/70 bg-emerald-950/60 text-emerald-100"
-                : "border-slate-700 bg-slate-900/80 text-slate-200"
-          }`}
-        >
-          {t.kind === "success" ? (
-            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          ) : t.kind === "error" ? (
-            <X className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          ) : null}
-          <p className="min-w-0 flex-1">{t.body}</p>
-          <button
-            className="ml-1 shrink-0 opacity-60 transition-opacity hover:opacity-100"
-            onClick={() => onDismiss(t.id)}
-            aria-label="Dismiss"
-          >
-            <X className="h-3 w-3" />
-          </button>
         </div>
       ))}
     </div>
