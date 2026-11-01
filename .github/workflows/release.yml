@@ -36,6 +36,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+          # keyed per matrix runner
+          key: ${{ matrix.platform }}
+
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
