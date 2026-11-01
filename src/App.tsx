@@ -15,6 +15,19 @@ export default function App() {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [results, setResults] = useState<PresetResult[]>([]);
   void results; // consumed by the activity log in a later pass
+  const [launcherPkg, setLauncherPkg] = useState("com.spocky.projtv");
+
+  const applyLauncher = useCallback(async () => {
+    setBusy({ kind: "preset", id: "grant" });
+    try {
+      const res = await invoke<PresetResult>("grant_launcher", { package: launcherPkg });
+      setStatus(res.error ? `Setup failed: ${res.error}` : "Launcher permission granted.");
+    } catch (e) {
+      setStatus(`Setup failed: ${String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  }, [launcherPkg]);
 
   useEffect(() => {
     invoke<Preset[]>("get_presets").then(setPresets).catch(() => setPresets([]));
@@ -175,6 +188,16 @@ export default function App() {
             />
           ))}
         </div>
+
+        <h2 className="mb-3 mt-8 text-[11px] font-medium uppercase tracking-widest text-slate-500">
+          Launcher
+        </h2>
+        <LauncherCard
+          launcherPkg={launcherPkg}
+          setLauncherPkg={setLauncherPkg}
+          busy={busy?.kind === "preset" && busy !== null && "id" in busy && busy.id === "grant"}
+          onApply={() => void applyLauncher()}
+        />
       </main>
     </div>
   );
@@ -239,6 +262,53 @@ function PresetCard({
       >
         {busy ? "Working..." : "Apply"}
       </button>
+    </div>
+  );
+}
+
+function LauncherCard({
+  launcherPkg,
+  setLauncherPkg,
+  busy,
+  onApply,
+}: {
+  launcherPkg: string;
+  setLauncherPkg: (s: string) => void;
+  busy: boolean;
+  onApply: () => void;
+}) {
+  const commands = [
+    `pm grant ${launcherPkg} android.permission.WRITE_SECURE_SETTINGS`,
+    `pm grant ${launcherPkg} android.permission.READ_LOGS`,
+    `pm grant ${launcherPkg} android.permission.PACKAGE_USAGE_STATS`,
+  ];
+  return (
+    <div className="rounded-deck-card border border-deck-line bg-deck-panel p-4 hover:border-slate-700">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-slate-100">Custom launcher</p>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            Grants WRITE_SECURE_SETTINGS so the selected launcher can manage the home screen.
+          </p>
+          <p className="mt-2 text-[11px] text-slate-500">{commands.join("  |  ")}</p>
+        </div>
+        <select
+          className="rounded-deck border border-deck-line bg-deck-bg px-2.5 py-2 text-slate-200 focus:border-cyan-600 focus:outline-none md:w-56"
+          value={launcherPkg}
+          onChange={(e) => setLauncherPkg(e.target.value)}
+        >
+          <option value="com.spocky.projtv">Projectivy Launcher</option>
+          <option value="com.spocky.projtv.free">Projectivy (Free)</option>
+          <option value="com.google.android.tvlauncher">Stock Google TV launcher</option>
+        </select>
+        <button
+          className="rounded-deck bg-violet-500 px-3.5 py-2 text-[13px] font-medium text-slate-950 hover:bg-violet-400 disabled:opacity-40"
+          onClick={onApply}
+          disabled={busy}
+        >
+          {busy ? "Working..." : "Grant"}
+        </button>
+      </div>
     </div>
   );
 }
