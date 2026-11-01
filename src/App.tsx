@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  Check, LoaderCircle, MonitorSmartphone,
+  Check, ChevronDown, LoaderCircle, MonitorSmartphone,
   ScanSearch, ShieldCheck, Tv, UploadCloud, X,
 } from "lucide-react";
 import type { ConnectResult, DeviceInfo, Preset, PresetResult, ScanEntry } from "./types";
@@ -65,6 +65,7 @@ export default function App() {
   const [applied, setApplied] = useState<Record<string, boolean>>({});
   const [results, setResults] = useState<PresetResult[]>([]);
   const [dropping, setDropping] = useState(false);
+  const [devOpen, setDevOpen] = useState<Record<string, boolean>>({});
   const [apkState, setApkState] = useState<"idle" | "installing" | "done">("idle");
   const toasts = useRef<{ id: number; kind: ToastKind; body: string }[]>([]);
   const [, forceToastRerender] = useState(0);
@@ -99,7 +100,7 @@ export default function App() {
 
   const scan = useCallback(async () => {
     setBusy({ kind: "scan" });
-    setStatus("Scanning LAN: mDNS + TCP sweep on port 5555…");
+    setStatus("Scanning local Wi-Fi…");
     try {
       const found = await invoke<ScanEntry[]>("scan_lan");
       setDevices(found);
@@ -353,6 +354,8 @@ export default function App() {
               preset={p}
               busy={busy?.kind === "preset" && busy !== null && "id" in busy && busy.id === p.id}
               applied={!!applied[p.id]}
+              devOpen={!!devOpen[p.id]}
+              onToggleDev={() => setDevOpen((s) => ({ ...s, [p.id]: !s[p.id] }))}
               onApply={() => void applyPreset(p.id)}
             />
           ))}
@@ -364,6 +367,8 @@ export default function App() {
           setLauncherPkg={setLauncherPkg}
           busy={busy?.kind === "preset" && busy !== null && "id" in busy && busy.id === "grant"}
           applied={!!applied["grant"]}
+          devOpen={!!devOpen["grant"]}
+          onToggleDev={() => setDevOpen((s) => ({ ...s, grant: !s["grant"] }))}
           onApply={() => void applyLauncher()}
           connected={!!connected}
         />
@@ -459,21 +464,23 @@ function PresetCard({
   preset,
   busy,
   applied,
+  devOpen,
+  onToggleDev,
   onApply,
 }: {
   preset: Preset;
   busy: boolean;
   applied: boolean;
+  devOpen: boolean;
+  onToggleDev: () => void;
   onApply: () => void;
 }) {
+  const cleanTitle = CLEAN_PRESET_TITLES[preset.id] ?? preset.label;
   const sub = preset.description.split(".")[0];
   return (
     <div className="flex flex-col rounded-deck-card border border-deck-line bg-deck-panel p-4 transition-colors hover:border-slate-700">
-      <p className="font-medium text-slate-100">{preset.label}</p>
+      <p className="font-medium text-slate-100">{cleanTitle}</p>
       <p className="mt-1 flex-1 text-xs leading-5 text-slate-400">{sub}</p>
-      <p className="mt-2 text-[11px] text-slate-500">
-        {preset.commands.map((c) => c.cmd).join("  |  ")}
-      </p>
       {preset.restart_required && (
         <p className="mt-2 text-[11px] text-amber-400/70">Reboot the TV to finish.</p>
       )}
@@ -492,15 +499,40 @@ function PresetCard({
           "Apply"
         )}
       </button>
+      <button
+        className="mt-2 flex items-center gap-1 text-left text-[11px] text-slate-500 transition-colors hover:text-slate-400"
+        onClick={onToggleDev}
+        aria-expanded={devOpen}
+      >
+        <ChevronDown className={`h-3 w-3 transition-transform ${devOpen ? "rotate-180" : ""}`} />
+        View technical details
+      </button>
+      {devOpen && (
+        <div className="mt-2 rounded-deck bg-black/40 p-2.5 font-mono text-[11px] leading-5">
+          {preset.commands.map((c, i) => (
+            <p key={i} className="truncate text-slate-400" title={c.cmd}>
+              {c.cmd}
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
+
+const CLEAN_PRESET_TITLES: Record<string, string> = {
+  "background-ram-opt": "Cap Idle Background Apps",
+  "animation-speedup": "Speed Up Animations",
+  "xiaomi-debloat": "Remove Xiaomi Stock Ads",
+};
 
 function LauncherCard({
   launcherPkg,
   setLauncherPkg,
   busy,
   applied,
+  devOpen,
+  onToggleDev,
   onApply,
   connected,
 }: {
@@ -508,6 +540,8 @@ function LauncherCard({
   setLauncherPkg: (s: string) => void;
   busy: boolean;
   applied: boolean;
+  devOpen: boolean;
+  onToggleDev: () => void;
   onApply: () => void;
   connected: boolean;
 }) {
@@ -522,9 +556,8 @@ function LauncherCard({
         <div className="min-w-0 flex-1">
           <p className="font-medium text-slate-100">Use a custom home screen</p>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            Grants WRITE_SECURE_SETTINGS so the selected launcher can manage the home screen.
+            Lets a replacement launcher, such as Projectivy, take over the home screen.
           </p>
-          <p className="mt-2 text-[11px] text-slate-500">{commands.join("  |  ")}</p>
         </div>
         <select
           className="rounded-deck border border-deck-line bg-deck-bg px-2.5 py-2 text-slate-200 focus:border-cyan-600 focus:outline-none md:w-56"
@@ -553,6 +586,23 @@ function LauncherCard({
           )}
         </button>
       </div>
+      <button
+        className="mt-2.5 flex items-center gap-1 text-[11px] text-slate-500 transition-colors hover:text-slate-400"
+        onClick={onToggleDev}
+        aria-expanded={devOpen}
+      >
+        <ChevronDown className={`h-3 w-3 transition-transform ${devOpen ? "rotate-180" : ""}`} />
+        View technical details
+      </button>
+      {devOpen && (
+        <div className="mt-2 rounded-deck bg-black/40 p-2.5 font-mono text-[11px] leading-5">
+          {commands.map((c, i) => (
+            <p key={i} className="truncate text-slate-400" title={c}>
+              {c}
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
