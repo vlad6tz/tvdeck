@@ -1,6 +1,7 @@
 //! TVDeck backend binary + Tauri IPC surface.
 //!
-//! Commands: `connect_device`, `scan_lan`.
+//! Commands: `connect_device`, `scan_lan`, `apply_preset`, `grant_launcher`
+//! (+ small helper: `get_presets`).
 //!
 //! ADB / discovery / preset logic lives in the sibling modules so Tauri
 //! stays a thin transport shell here.
@@ -133,6 +134,68 @@ fn failed(err: String, fp: Option<String>) -> ConnectResult {
 }
 
 
+#[tauri::command]
+async fn apply_preset(state: State<'_, AppState>, preset_id: String) -> Result<PresetResult, String> {
+    let preset = presets::catalog()
+        .into_iter()
+        .find(|p| p.id == preset_id)
+        .ok_or(format!("unknown preset id '{}'", preset_id))?;
+
+    let mut slot = state.device.lock().await;
+    let device = slot
+        .as_mut()
+        .ok_or_else(|| "No TV connected. Connect to a TV first.".to_string())?;
+
+    run_preset(device, preset).await
+}
+
+#[tauri::command]
+async fn grant_launcher(
+    state: State<'_, AppState>,
+    package: String,
+) -> Result<PresetResult, String> {
+    if package.trim().is_empty() || !package.trim().chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') {
+        return Err("package name contains unsafe characters".into());
+    }
+    let mut slot = state.device.lock().await;
+    let device = slot
+        .as_mut()
+        .ok_or_else(|| "No TV connected. Connect to a TV first.".to_string())?;
+    run_preset(device, presets::launcher_preset(&package.trim())).await
+}
+
+async fn run_preset(device: &mut AdbDevice, preset: presets::Preset) -> Result<PresetResult, String> {
+    let mut result = PresetResult {
+        preset_id: preset.id.clone(),
+        steps: Vec::new(),
+        error: None,
+    };
+    for cmd in &preset.commands {
+        match device.shell(&cmd.cmd).await {
+            Ok(out) => {
+                // `pm disable-user` / `pm grant` print nothing on success;
+                // anything that IS printed is almost surely the error text.
+                let trimmed = out.trim().to_string();
+                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("Success") {
+                    result.steps.push(format!("{}: OK", cmd.cmd));
+                } else {
+                    result.steps.push(format!("{}: {}", cmd.cmd, trimmed));
+                }
+            }
+            Err(e) => {
+                result.error = Some(format!("{} failed: {}", cmd.cmd, e));
+                return Ok(result);
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn get_presets() -> Result<Vec<presets::Preset>, String> {
+    Ok(presets::catalog())
+}
+
 async fn host_key(state: &State<'_, AppState>) -> Result<Arc<adb::auth::HostKey>, String> {
     let dir = key_dir()
         .ok_or_else(|| "cannot resolve the home directory to store the ADB key".to_string())?;
@@ -159,8 +222,34 @@ pub fn main() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             scan_lan,
-            connect_device
+            connect_device,
+            apply_preset,
+            get_presets,
+            grant_launcher
         ])
         .run(tauri::generate_context!())
         .expect("TVDeck failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::presets;
+
+    #[test]
+    fn catalog_has_core_presets() {
+        let catalog = presets::catalog();
+        let ids: Vec<&str> = catalog.iter().map(|p| p.id.as_str()).collect();
+        assert!(ids.contains(&"xiaomi-debloat"));
+        assert!(ids.contains(&"background-ram-opt"));
+        assert!(ids.contains(&"animation-speedup"));
+    }
+
+    #[test]
+    fn launcher_preset_grants_secure_settings() {
+        let p = presets::launcher_preset("com.spocky.projtv");
+        assert!(p
+            .commands
+            .iter()
+            .any(|c| c.cmd.contains("pm grant com.spocky.projtv android.permission.WRITE_SECURE_SETTINGS")));
+    }
 }
