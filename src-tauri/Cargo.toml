@@ -1,0 +1,38 @@
+[package]
+name = "tvdeck-backend"
+version = "0.1.0"
+description = "TVDeck - Discover, debloat, optimize and manage Android TV devices over Wi-Fi ADB"
+authors = ["TVDeck contributors"]
+license = "MIT"
+repository = ""
+edition = "2021"
+rust-version = "1.77"
+
+[[bin]]
+name = "tvdeck"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["net", "io-util", "time", "sync", "rt-multi-thread", "macros"] }
+mdns-sd = "0.13"
+rsa = { version = "0.9", features = ["sha2"] }
+num-bigint = "0.4"
+num-traits = "0.2"
+rand = "0.8"
+sha1 = { version = "0.10", features = ["oid"] }
+base64 = "0.22"
+local-ip-address = "0.6"
+thiserror = "2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
