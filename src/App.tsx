@@ -11,6 +11,7 @@ export default function App() {
   const [connectedIp, setConnectedIp] = useState<string | null>(null);
   const [status, setStatus] = useState("Idle. Scan the LAN.");
   const [busy, setBusy] = useState<Busy>(null);
+  const [manualIp, setManualIp] = useState("");
 
   const scan = useCallback(async () => {
     setBusy({ kind: "scan" });
@@ -106,6 +107,25 @@ export default function App() {
               No devices yet. Scan the LAN to find TVs with network debugging on port 5555.
             </p>
           )}
+        </div>
+
+        <div className="border-t border-deck-line p-3">
+          <div className="flex gap-2">
+            <input
+              className="min-w-0 flex-1 rounded-deck border border-deck-line bg-deck-bg px-2.5 py-1.5 text-slate-200 placeholder:text-slate-600 focus:border-cyan-600 focus:outline-none"
+              placeholder="Enter device IP (192.168.x.x)"
+              value={manualIp}
+              onChange={(e) => setManualIp(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && manualIp.trim() && void connect(manualIp.trim())}
+            />
+            <button
+              className="rounded-deck bg-cyan-500 px-3 py-1.5 font-medium text-slate-950 hover:bg-cyan-400 disabled:opacity-40"
+              disabled={busy !== null || !manualIp.trim()}
+              onClick={() => void connect(manualIp.trim())}
+            >
+              Connect
+            </button>
+          </div>
         </div>
       </aside>
 
