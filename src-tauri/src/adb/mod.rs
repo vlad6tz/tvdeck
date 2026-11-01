@@ -146,7 +146,42 @@ impl AdbDevice {
             }
         }
 
+        let info = dev.fetch_device_info().await?;
+        on_event(HandshakeEvent::Connected { info });
         Ok(dev)
+    }
+
+    async fn fetch_device_info(&mut self) -> Result<DeviceInfo, AdbError> {
+        // Property names are compile-time constants: no quoting needed.
+        let script = [
+            "ro.product.model",
+            "ro.product.brand",
+            "ro.build.version.release",
+            "ro.build.version.sdk",
+        ]
+        .iter()
+        .map(|p| format!("getprop {}", p))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+        let raw = self.shell(&script).await?;
+        let mut lines = raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
+
+        let model = lines.next().unwrap_or_else(|| "Unknown".into());
+        let brand = lines.next().unwrap_or_default();
+        let android_version = lines.next().unwrap_or_default();
+        let sdk_level = lines.next().unwrap_or_default();
+        // Show how full /data is so users know before installing APKs.
+        let df = self.shell("df /data 2>/dev/null | tail -n 1").await.unwrap_or_default();
+        let data_partition = df.trim().to_string();
+
+        Ok(DeviceInfo {
+            model,
+            brand,
+            android_version,
+            sdk_level,
+            data_partition,
+        })
     }
 
     async fn send(
@@ -163,6 +198,51 @@ impl AdbDevice {
         .await
     }
 
+    /// Run `cmd`, returning combined stdout+stderr until the remote stream
+    /// closes (legacy v1 shell closes when the command exits).
+    pub async fn shell(&mut self, cmd: &str) -> Result<String, AdbError> {
+        match timeout(COMMAND_DEADLINE, self.raw_shell_loop(cmd)).await {
+            Ok(r) => r.map_err(Into::into),
+            Err(_elapsed) => Err(AdbError::CommandTimeout(cmd.to_string())),
+        }
+    }
+
+    async fn raw_shell_loop(&mut self, cmd: &str) -> Result<String, messages::WireError> {
+        let local = self.next_local_id;
+        self.next_local_id += 1;
+
+        let mut open_payload = Vec::with_capacity(cmd.len() + 6);
+        open_payload.extend_from_slice(b"shell:");
+        open_payload.extend_from_slice(cmd.as_bytes());
+        send_packet(
+            &mut self.stream,
+            &messages::Packet::new(A_OPEN, local, 0, open_payload),
+        )
+        .await?;
+
+        let mut out: Vec<u8> = Vec::new();
+        loop {
+            let pkt = recv_packet(&mut self.stream, RECV_CAP_MAX).await?;
+            match pkt.command {
+                A_OKAY if pkt.arg0 == local => { /* stream established */ }
+                A_WRTE if pkt.arg1 == local => {
+                    out.extend_from_slice(&pkt.payload);
+                    send_packet(
+                        &mut self.stream,
+                        &messages::Packet::new(A_OKAY, local, pkt.arg0, Vec::new()),
+                    )
+                    .await?;
+                }
+                A_CLSE if pkt.arg1 == local => break,
+                // Very old adbd builds close with 0/0 args.
+                A_CLSE => break,
+                other => {
+                    return Err(messages::WireError::CorruptMagic(other));
+                }
+            }
+        }
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    }
 }
 
 async fn recv_deadline(
