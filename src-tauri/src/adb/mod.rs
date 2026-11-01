@@ -243,6 +243,110 @@ impl AdbDevice {
         }
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
+    /// Push a file to the TV via the `sync:` stream (ADB's rsync-lite).
+    pub async fn push_file(&mut self, host_path: &Path, remote_path: &str) -> Result<(), AdbError> {
+        let data = tokio::fs::read(host_path).await?;
+
+        let local = self.next_local_id;
+        self.next_local_id += 1;
+        self.send(A_OPEN, local, 0, b"sync:".to_vec()).await?;
+
+        // 1) SEND "path,mode"; mode travels decimal per sync spec.
+        let mut send_req = Vec::with_capacity(remote_path.len() + 12);
+        send_req.extend_from_slice(remote_path.as_bytes());
+        send_req.push(b',');
+        send_req.extend_from_slice(0o100644_u32.to_string().as_bytes());
+        self.sync_write(local, b"SEND", &send_req).await?;
+
+        // 2) DATA chunks must fit inside one ADB WRTE (8B frame + 8B header).
+        let chunk_max = (self.send_payload_cap as usize)
+            .saturating_sub(8 + 8)
+            .max(1024)
+            .min(65_536);
+        for chunk in data.chunks(chunk_max) {
+            self.sync_write(local, b"DATA", chunk).await?;
+        }
+
+        // 3) DONE: mtime rides in the sync frame's length field.
+        self.send(A_WRTE, local, 0, {
+            Vec::from(b"DONE".as_slice())
+                .into_iter()
+                .chain(1_600_000_000u32.to_le_bytes())
+                .collect::<Vec<u8>>()
+        })
+        .await?;
+        self.ack_write(local).await?;
+
+        // 4) status frame: OKAY then size, or FAIL message.
+        let (id, payload) = self.sync_read(local).await?;
+        match id {
+            [b'O', b'K', b'A', b'Y'] => Ok(()),
+            [b'F', b'A', b'I', b'L'] => Err(AdbError::Device(
+                String::from_utf8_lossy(&payload).into_owned(),
+            )),
+            other => Err(AdbError::Device(format!(
+                "unexpected sync response frame {:02x?}",
+                &other[..]
+            ))),
+        }
+    }
+
+    /// Write one sync frame (id + length + payload) through an ADB WRTE,
+    /// waiting for the device's per-message OKAY.
+    async fn sync_write(&mut self, local: u32, id: &[u8; 4], payload: &[u8]) -> Result<(), AdbError> {
+        let mut frame = Vec::with_capacity(8 + payload.len());
+        frame.extend_from_slice(id);
+        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame.extend_from_slice(payload);
+        self.send(A_WRTE, local, 0, frame).await?;
+        self.ack_write(local).await
+    }
+
+    async fn ack_write(&mut self, local: u32) -> Result<(), AdbError> {
+        let pkt = recv_packet(&mut self.stream, RECV_CAP_MAX).await?;
+        match pkt.command {
+            A_OKAY if pkt.arg0 == local => Ok(()),
+            A_CLSE => Err(AdbError::Device("sync stream closed by device".into())),
+            _ => Err(AdbError::Device("unexpected packet during sync send".into())),
+        }
+    }
+
+    async fn sync_read(&mut self, local: u32) -> Result<([u8; 4], Vec<u8>), AdbError> {
+        let pkt = recv_packet(&mut self.stream, RECV_CAP_MAX).await?;
+        if pkt.command != A_WRTE || pkt.arg1 != local {
+            return Err(AdbError::Device("expected WRTE sync response".into()));
+        }
+        if pkt.payload.len() < 8 {
+            return Err(AdbError::Device("short sync frame".into()));
+        }
+        self.send(A_OKAY, local, pkt.arg0, Vec::new()).await?;
+        let mut id = [0u8; 4];
+        id.copy_from_slice(&pkt.payload[..4]);
+        Ok((id, pkt.payload[8..].to_vec()))
+    }
+
+    /// Push an `.apk` to `/data/local/tmp/` then run `pm install -r`.
+    pub async fn install_apk(&mut self, host_path: &Path) -> Result<String, AdbError> {
+        // Sanitize: keep only the basename, then a conservative charset so
+        // the remote path cannot escape /data/local/tmp.
+        let raw_name = host_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "app.apk".into());
+        let safe_name: String = raw_name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+            .collect();
+        let remote = format!("/data/local/tmp/tvdeck_{}", safe_name);
+
+        self.push_file(host_path, &remote).await?;
+        let out = self
+            .shell(&format!("pm install -r '{}'", remote.replace('\'', "'\\''")))
+            .await?;
+        // Non-fatal cleanup of the staged copy.
+        let _ = self.shell(&format!("rm -f '{}'", remote.replace('\'', "'\\''"))).await;
+        Ok(out)
+    }
 }
 
 async fn recv_deadline(
@@ -255,5 +359,19 @@ async fn recv_deadline(
         Err(_elapsed) => Err(AdbError::HandshakeTimeout(
             "timeout waiting for TV response during handshake".into(),
         )),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn install_apk_sanitizes_names() {
+        let evil = "app; rm -rf /data/x..y";
+        let safe: String = evil
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+            .collect();
+        assert!(!safe.contains(';') && !safe.contains(' '));
     }
 }
