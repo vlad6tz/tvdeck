@@ -32,18 +32,25 @@ The ADB client is implemented natively in Rust. TVDeck speaks the protocol direc
 
 | Platform | Status | Format |
 | --- | --- | --- |
-| Windows 10+ | Supported | Installer, portable `.exe` |
-| macOS 12+ | Supported | `.dmg` (Intel and Apple Silicon) |
-| Linux | Supported | AppImage, AUR package for Arch-based systems |
+| Windows 10+ | Supported | `.msi` and `.exe` installer |
+| macOS 13+ | Supported | `.dmg` (Apple Silicon) |
+| Linux | Supported | AppImage, `.deb` and `.rpm` packages |
 
 ## Installation & Downloads
 
 Pre-built binaries are published on the [Releases](https://github.com/vlad6tz/tvdeck/releases) page. Download the package for your platform and install it as usual.
 
-On Arch Linux and derivatives (including Omarchy), install from the AUR:
+On Linux, use the `.deb` or `.rpm` package with your distribution's package manager, or run the AppImage directly:
 
 ```bash
-yay -S tvdeck
+# Debian, Ubuntu and derivatives
+sudo dpkg -i TVDeck_0.1.0_amd64.deb
+
+# Fedora and derivatives
+sudo dnf install TVDeck-0.1.0-1.x86_64.rpm
+
+# Any distribution: run without installing
+./TVDeck_0.1.0_amd64.AppImage
 ```
 
 On Windows, SmartScreen may show a warning for unsigned builds. Choose "More info" and "Run anyway" if you built the app yourself.
