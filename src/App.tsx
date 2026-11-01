@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ScanSearch, Tv, X } from "lucide-react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open } from "@tauri-apps/plugin-dialog";
+import { ScanSearch, Tv, UploadCloud, X } from "lucide-react";
 import type { ConnectResult, DeviceInfo, Preset, PresetResult, ScanEntry } from "./types";
 
-type Busy = null | { kind: "scan" } | { kind: "connect"; ip: string } | { kind: "preset"; id: string };
+type Busy =
+  | null
+  | { kind: "scan" }
+  | { kind: "connect"; ip: string }
+  | { kind: "preset"; id: string }
+  | { kind: "apk" };
 
 export default function App() {
   const [devices, setDevices] = useState<ScanEntry[]>([]);
@@ -28,6 +35,36 @@ export default function App() {
       setBusy(null);
     }
   }, [launcherPkg]);
+
+  const installApk = useCallback(async (apkPath: string) => {
+    setBusy({ kind: "apk" });
+    try {
+      const res = await invoke<PresetResult>("install_apk", { apkPath });
+      setStatus(res.error ? `Install failed: ${res.error}` : "APK installed.");
+    } catch (e) {
+      setStatus(`Install failed: ${String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const [dropping, setDropping] = useState(false);
+
+  useEffect(() => {
+    const unlisten = getCurrentWebview().onDragDropEvent((ev) => {
+      if (ev.payload.type === "over") {
+        setDropping(true);
+      } else if (ev.payload.type === "drop") {
+        setDropping(false);
+        const apk = ev.payload.paths.find((p) => p.toLowerCase().endsWith(".apk"));
+        if (apk) void installApk(apk);
+        else setStatus("Not an APK file.");
+      } else {
+        setDropping(false);
+      }
+    });
+    return () => void unlisten.then((fn) => fn());
+  }, [installApk]);
 
   useEffect(() => {
     invoke<Preset[]>("get_presets").then(setPresets).catch(() => setPresets([]));
@@ -198,6 +235,23 @@ export default function App() {
           busy={busy?.kind === "preset" && busy !== null && "id" in busy && busy.id === "grant"}
           onApply={() => void applyLauncher()}
         />
+
+        <h2 className="mb-3 mt-8 text-[11px] font-medium uppercase tracking-widest text-slate-500">
+          Install an app
+        </h2>
+        <ApkDropzone
+          dropping={dropping}
+          busy={busy === null ? false : busy.kind === "apk"}
+          disabled={busy !== null}
+          onBrowse={async () => {
+            const file = await open({
+              filters: [{ name: "Android app", extensions: ["apk"] }],
+              multiple: false,
+              title: "Choose an app to install",
+            });
+            if (file) void installApk(file);
+          }}
+        />
       </main>
     </div>
   );
@@ -307,6 +361,38 @@ function LauncherCard({
           disabled={busy}
         >
           {busy ? "Working..." : "Grant"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ApkDropzone({
+  dropping,
+  busy,
+  disabled,
+  onBrowse,
+}: {
+  dropping: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onBrowse: () => void | Promise<void>;
+}) {
+  return (
+    <div
+      className={`flex flex-col items-center justify-center rounded-deck-card border-2 border-dashed px-6 py-10 text-center ${
+        dropping ? "border-cyan-500/70 bg-cyan-500/5" : "border-slate-800 bg-deck-panel"
+      }`}
+    >
+      <UploadCloud className={`h-7 w-7 ${dropping ? "text-cyan-300" : "text-slate-600"}`} />
+      <p className="mt-3 text-sm text-slate-300">Drop an .apk here or browse to install</p>
+      <div className="mt-4">
+        <button
+          className="rounded-deck border border-slate-700 px-3.5 py-1.5 text-[13px] text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+          onClick={() => void onBrowse()}
+          disabled={disabled || busy}
+        >
+          Browse .apk
         </button>
       </div>
     </div>
